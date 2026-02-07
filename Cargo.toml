@@ -15,10 +15,13 @@ members = ["xtask"]
 crate-type = ["cdylib"]
 
 [dependencies]
-# This fork of nih_plug exposes process_stopped
-nih_plug = { git = "https://github.com/Cmdv/nih-plug.git", branch = "expose-process-stopped", features = ["assert_process_allocs"] }
-# This fork of nih_plug_iced is updated to use iced 0.14
-nih_plug_iced = { git = "https://github.com/Cmdv/nih_plug_iced.git", branch = "screen-cursor-location", features = ["canvas", "svg", "wgpu"] }
+# This fork supports iced 0.14
+#todo: uncomment
+#nih_plug = { git = "https://github.com/chairbender/nih-plug.git", branch = "support-iced-0.14", features = ["standalone", "assert_process_allocs"] }
+#nih_plug_iced= { git = "https://github.com/chairbender/nih-plug.git", branch = "support-iced-0.14", features = ["canvas", "svg", "wgpu"] }
+nih_plug = { path = "../nih-plug-mine", features = ["standalone", "assert_process_allocs"]}
+nih_plug_iced = { path = "../nih-plug-mine/nih_plug_iced", features = ["canvas", "svg", "wgpu"]}
+
 
 atomic_float = "0.1"
 

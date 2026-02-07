@@ -17,7 +17,8 @@ pub(crate) fn create(
     peak_meter: Arc<AtomicF32>,
     editor_state: Arc<IcedState>,
 ) -> Option<Box<dyn Editor>> {
-    create_iced_editor::<GainEditor>(editor_state, (params, peak_meter))
+    // todo: not sure about fonts param
+    create_iced_editor::<GainEditor>(editor_state, (params, peak_meter), vec![])
 }
 
 struct GainEditor {
