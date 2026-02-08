@@ -113,6 +113,6 @@ impl IcedEditor for GainEditor {
     }
 
     fn theme(&self) -> Self::Theme {
-        todo!()
+        Theme::Dark
     }
 }
