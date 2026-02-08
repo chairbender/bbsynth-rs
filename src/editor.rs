@@ -42,7 +42,7 @@ impl IcedEditor for GainEditor {
     type Executor = executor::Default;
     type Message = Message;
     type InitializationFlags = (Arc<GainParams>, Arc<AtomicF32>);
-    type Theme = ();
+    type Theme = Theme;
 
     fn new(
         (params, peak_meter): Self::InitializationFlags,
@@ -70,24 +70,24 @@ impl IcedEditor for GainEditor {
         Task::none()
     }
 
-    fn view(&mut self) -> Element<'_, Self::Message> {
+    fn view(&self) -> Element<'_, Self::Message> {
         Column::new()
-            .align_items(Alignment::Center)
+            .align_x(Alignment::Center)
             .push(
                 Text::new("Gain GUI")
                     .font(assets::NOTO_SANS_LIGHT)
                     .size(40)
-                    .height(50.into())
+                    .height(50)
                     .width(Length::Fill)
-                    .horizontal_alignment(alignment::Horizontal::Center)
-                    .vertical_alignment(alignment::Vertical::Bottom),
+                    .align_x(alignment::Horizontal::Center)
+                    .align_y(alignment::Vertical::Bottom),
             )
             .push(
                 Text::new("Gain")
-                    .height(20.into())
+                    .height(20)
                     .width(Length::Fill)
-                    .horizontal_alignment(alignment::Horizontal::Center)
-                    .vertical_alignment(alignment::Vertical::Center),
+                    .align_x(alignment::Horizontal::Center)
+                    .align_y(alignment::Vertical::Center),
             )
             .push(
                 nih_widgets::ParamSlider::new(&self.params.gain)

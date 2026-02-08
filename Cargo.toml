@@ -10,9 +10,8 @@ description = "Virtual Analog synth"
 [workspace]
 members = ["xtask"]
 
-# the crate type seemingly needs to be this for nih-plug
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "lib"]
 
 [dependencies]
 # This fork supports iced 0.14
