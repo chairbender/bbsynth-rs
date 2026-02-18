@@ -3,6 +3,14 @@ Fun with virtual analog - now in Rust + Faust
 
 Using portlight + coupler.
 
+# Build
+
+```
+cargo run -p cargo-coupler -- coupler bundle -p bbsynth-vst3 
+cargo run -p cargo-coupler -- coupler bundle -p bbsynth-clap
+```
+
+Add `--release` for release build 
 
 # Attribution
 

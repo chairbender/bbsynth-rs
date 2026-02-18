@@ -13,3 +13,7 @@ portlight = { git = "https://github.com/coupler-rs/portlight", rev = "e517f1e7e1
 flicker = { git = "https://github.com/coupler-rs/flicker", rev = "80aca05cb6c7406f8c2a4ba66d85849dc344afaa" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+
+[workspace]
+members = ["format/*", "xtask", "cargo-coupler"]
+

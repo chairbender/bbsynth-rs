@@ -14,4 +14,4 @@ crate-type = ["cdylib"]
 
 [dependencies]
 coupler = { git="https://github.com/chairbender/coupler", branch="update-portlight-fix-x11-clap"}
-bbsynth = { path = "../.." }
+bbsynth-rs = { path = "../.." }

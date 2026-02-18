@@ -1,0 +1,14 @@
+# TODO temporarily duplicated from the main coupler repo - find a better approach for using this 
+
+[package]
+name = "cargo-coupler"
+version = "0.1.0"
+authors = ["Micah Johnston <micah@photophore.systems>"]
+edition = "2021"
+publish = false
+
+[dependencies]
+clap = { version = "3.1.17", features = ["derive", "cargo"] }
+cargo_metadata = "0.14.2"
+serde = "1.0"
+serde_json = "1.0"

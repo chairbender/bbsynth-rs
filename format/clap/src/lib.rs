@@ -1,1 +1,1 @@
-coupler::clap!(gain::Gain);
+coupler::clap!(bbsynth_rs::Gain);
