@@ -1,0 +1,17 @@
+[package]
+name = "bbsynth-clap"
+version = "0.1.0"
+authors = ["Kyle Hipke"]
+edition = "2021"
+publish = false
+
+[package.metadata.coupler]
+name = "bbsynth"
+formats = ["clap"]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+coupler = { git="https://github.com/chairbender/coupler", branch="update-portlight-fix-x11-clap"}
+gain = { path = "../.." }

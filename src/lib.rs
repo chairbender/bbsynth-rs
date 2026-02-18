@@ -1,180 +1,362 @@
-use atomic_float::AtomicF32;
-use nih_plug::prelude::*;
-use nih_plug_iced::IcedState;
-use std::sync::Arc;
+use std::fmt::{self, Formatter};
+use std::io::{self, Read, Write};
+use std::os::fd::AsRawFd;
+use std::os::raw::c_int;
+use serde::{Deserialize, Serialize};
 
-mod editor;
+use coupler::format::clap::*;
+use coupler::format::vst3::*;
+use coupler::params::{ParamId, ParamValue};
+use coupler::view::{ParentWindow, RawParent, Size, View};
+use coupler::{buffers::*, bus::*, engine::*, events::*, host::*, params::*, plugin::*, view::*};
 
-/// The time it takes for the peak meter to decay by 12 dB after switching to complete silence.
-const PEAK_METER_DECAY_MS: f64 = 150.0;
+use flicker::Renderer;
 
-/// This is mostly identical to the gain example, minus some fluff, and with a GUI.
-pub struct Gain {
-    params: Arc<GainParams>,
+use portlight::{
+    Bitmap, Context, Cursor, EventLoop, EventLoopMode, EventLoopOptions, Key, MouseButton, Point,
+    RawWindow, Response, Task, TaskHandle, Window, WindowEvent, WindowOptions,
+};
 
-    /// Needed to normalize the peak meter's response based on the sample rate.
-    peak_meter_decay_weight: f32,
-    /// The current data for the peak meter. This is stored as an [`Arc`] so we can share it between
-    /// the GUI and the audio processing parts. If you have more state to share, then it's a good
-    /// idea to put all of that in a struct behind a single `Arc`.
-    ///
-    /// This is stored as voltage gain.
-    peak_meter: Arc<AtomicF32>,
-}
-
-#[derive(Params)]
+#[derive(Params, Serialize, Deserialize, Clone)]
 struct GainParams {
-    /// The editor state, saved together with the parameter state so the custom scaling can be
-    /// restored.
-    #[persist = "editor-state"]
-    editor_state: Arc<IcedState>,
-
-    #[id = "gain"]
-    pub gain: FloatParam,
-}
-
-impl Default for Gain {
-    fn default() -> Self {
-        Self {
-            params: Arc::new(GainParams::default()),
-
-            peak_meter_decay_weight: 1.0,
-            peak_meter: Arc::new(AtomicF32::new(util::MINUS_INFINITY_DB)),
-        }
-    }
+    #[param(id = 0, name = "Gain", range = 0.0..1.0, format = "{:.2}")]
+    gain: f32,
 }
 
 impl Default for GainParams {
-    fn default() -> Self {
-        Self {
-            editor_state: editor::default_state(),
-
-            // See the main gain example for more details
-            gain: FloatParam::new(
-                "Gain",
-                util::db_to_gain(0.0),
-                FloatRange::Skewed {
-                    min: util::db_to_gain(-30.0),
-                    max: util::db_to_gain(30.0),
-                    factor: FloatRange::gain_skew_factor(-30.0, 30.0),
-                },
-            )
-            .with_smoother(SmoothingStyle::Logarithmic(50.0))
-            .with_unit(" dB")
-            .with_value_to_string(formatters::v2s_f32_gain_to_db(2))
-            .with_string_to_value(formatters::s2v_f32_gain_to_db()),
-        }
+    fn default() -> GainParams {
+        GainParams { gain: 1.0 }
     }
 }
 
+pub struct Gain {
+    params: GainParams,
+}
+
 impl Plugin for Gain {
-    const NAME: &'static str = "Gain GUI (iced)";
-    const VENDOR: &'static str = "Moist Plugins GmbH";
-    const URL: &'static str = "https://youtu.be/dQw4w9WgXcQ";
-    const EMAIL: &'static str = "info@example.com";
+    type Engine = GainEngine;
+    type View = GainView;
 
-    const VERSION: &'static str = env!("CARGO_PKG_VERSION");
-
-    const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[
-        AudioIOLayout {
-            main_input_channels: NonZeroU32::new(2),
-            main_output_channels: NonZeroU32::new(2),
-            ..AudioIOLayout::const_default()
-        },
-        AudioIOLayout {
-            main_input_channels: NonZeroU32::new(1),
-            main_output_channels: NonZeroU32::new(1),
-            ..AudioIOLayout::const_default()
-        },
-    ];
-
-    const SAMPLE_ACCURATE_AUTOMATION: bool = true;
-
-    type SysExMessage = ();
-    type BackgroundTask = ();
-
-    fn params(&self) -> Arc<dyn Params> {
-        self.params.clone()
-    }
-
-    fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
-        editor::create(
-            self.params.clone(),
-            self.peak_meter.clone(),
-            self.params.editor_state.clone(),
-        )
-    }
-
-    fn initialize(
-        &mut self,
-        _audio_io_layout: &AudioIOLayout,
-        buffer_config: &BufferConfig,
-        _context: &mut impl InitContext<Self>,
-    ) -> bool {
-        // After `PEAK_METER_DECAY_MS` milliseconds of pure silence, the peak meter's value should
-        // have dropped by 12 dB
-        self.peak_meter_decay_weight = 0.25f64
-            .powf((buffer_config.sample_rate as f64 * PEAK_METER_DECAY_MS / 1000.0).recip())
-            as f32;
-
-        true
-    }
-
-    fn process(
-        &mut self,
-        buffer: &mut Buffer,
-        _aux: &mut AuxiliaryBuffers,
-        _context: &mut impl ProcessContext<Self>,
-    ) -> ProcessStatus {
-        for channel_samples in buffer.iter_samples() {
-            let mut amplitude = 0.0;
-            let num_samples = channel_samples.len();
-
-            let gain = self.params.gain.smoothed.next();
-            for sample in channel_samples {
-                *sample *= gain;
-                amplitude += *sample;
-            }
-
-            // To save resources, a plugin can (and probably should!) only perform expensive
-            // calculations that are only displayed on the GUI while the GUI is open
-            if self.params.editor_state.is_open() {
-                amplitude = (amplitude / num_samples as f32).abs();
-                let current_peak_meter = self.peak_meter.load(std::sync::atomic::Ordering::Relaxed);
-                let new_peak_meter = if amplitude > current_peak_meter {
-                    amplitude
-                } else {
-                    current_peak_meter * self.peak_meter_decay_weight
-                        + amplitude * (1.0 - self.peak_meter_decay_weight)
-                };
-
-                self.peak_meter
-                    .store(new_peak_meter, std::sync::atomic::Ordering::Relaxed)
-            }
+    fn info() -> PluginInfo {
+        PluginInfo {
+            name: "Gain".to_string(),
+            version: "0.1.0".to_string(),
+            vendor: "Vendor".to_string(),
+            url: "https://example.com".to_string(),
+            email: "example@example.com".to_string(),
+            buses: vec![BusInfo {
+                name: "Main".to_string(),
+                dir: BusDir::InOut,
+            }],
+            layouts: vec![
+                Layout {
+                    formats: vec![Format::Stereo],
+                },
+                Layout {
+                    formats: vec![Format::Mono],
+                },
+            ],
+            params: GainParams::params(),
+            has_view: true,
         }
+    }
 
-        ProcessStatus::Normal
+    fn new(_host: Host) -> Self {
+        Gain {
+            params: GainParams::default(),
+        }
+    }
+
+    fn set_param(&mut self, id: ParamId, value: ParamValue) {
+        self.params.set_param(id, value);
+    }
+
+    fn get_param(&self, id: ParamId) -> ParamValue {
+        self.params.get_param(id)
+    }
+
+    fn parse_param(&self, id: ParamId, text: &str) -> Option<ParamValue> {
+        self.params.parse_param(id, text)
+    }
+
+    fn display_param(
+        &self,
+        id: ParamId,
+        value: ParamValue,
+        fmt: &mut Formatter,
+    ) -> Result<(), fmt::Error> {
+        self.params.display_param(id, value, fmt)
+    }
+
+    fn save(&self, output: impl Write) -> io::Result<()> {
+        serde_json::to_writer(output, &self.params)?;
+
+        Ok(())
+    }
+
+    fn load(&mut self, input: impl Read) -> io::Result<()> {
+        self.params = serde_json::from_reader(input)?;
+
+        Ok(())
+    }
+
+    fn engine(&mut self, _config: &Config) -> Self::Engine {
+        GainEngine {
+            params: self.params.clone(),
+        }
+    }
+
+    fn view(&mut self, host: ViewHost, parent: &ParentWindow) -> Self::View {
+        GainView::open(host, parent, &self.params).unwrap()
+    }
+}
+
+impl Vst3Plugin for Gain {
+    fn vst3_info() -> Vst3Info {
+        Vst3Info {
+            class_id: Uuid::from_name("rs.coupler.gain"),
+        }
     }
 }
 
 impl ClapPlugin for Gain {
-    const CLAP_ID: &'static str = "com.moist-plugins-gmbh.gain-gui-iced";
-    const CLAP_DESCRIPTION: Option<&'static str> = Some("A smoothed gain parameter example plugin");
-    const CLAP_MANUAL_URL: Option<&'static str> = Some(Self::URL);
-    const CLAP_SUPPORT_URL: Option<&'static str> = None;
-    const CLAP_FEATURES: &'static [ClapFeature] = &[
-        ClapFeature::AudioEffect,
-        ClapFeature::Stereo,
-        ClapFeature::Mono,
-        ClapFeature::Utility,
-    ];
+    fn clap_info() -> ClapInfo {
+        ClapInfo {
+            id: "rs.coupler.gain".to_string(),
+        }
+    }
 }
 
-impl Vst3Plugin for Gain {
-    const VST3_CLASS_ID: [u8; 16] = *b"GainGuiIcedAaAAa";
-    const VST3_SUBCATEGORIES: &'static [Vst3SubCategory] =
-        &[Vst3SubCategory::Fx, Vst3SubCategory::Tools];
+pub struct GainEngine {
+    params: GainParams,
 }
 
-nih_export_clap!(Gain);
-nih_export_vst3!(Gain);
+impl GainEngine {
+    fn handle_event(&mut self, event: &Event) {
+        if let Data::ParamChange { id, value } = event.data {
+            self.params.set_param(id, value);
+        }
+    }
+}
+
+impl Engine for GainEngine {
+    fn reset(&mut self) {}
+
+    fn flush(&mut self, events: Events) {
+        for event in events {
+            self.handle_event(event);
+        }
+    }
+
+    fn process(&mut self, buffers: Buffers, events: Events) {
+        let mut buffers: (BufferMut,) = buffers.try_into().unwrap();
+        for (mut buffer, events) in buffers.0.split_at_events(events) {
+            for event in events {
+                self.handle_event(event);
+            }
+
+            for sample in buffer.samples() {
+                for channel in sample {
+                    *channel *= self.params.gain;
+                }
+            }
+        }
+    }
+}
+
+struct Gesture {
+    start_mouse_pos: Point,
+    start_value: f32,
+}
+
+struct ViewState {
+    host: ViewHost,
+    params: GainParams,
+    window: Option<Window>,
+    renderer: Renderer,
+    framebuffer: Vec<u32>,
+    mouse_pos: Point,
+    gesture: Option<Gesture>,
+}
+
+impl ViewState {
+    fn new(host: ViewHost, params: &GainParams) -> ViewState {
+        ViewState {
+            host,
+            params: params.clone(),
+            window: None,
+            renderer: Renderer::new(),
+            framebuffer: Vec::new(),
+            mouse_pos: Point { x: -1.0, y: -1.0 },
+            gesture: None,
+        }
+    }
+
+    fn update_cursor(&self, window: &Window) {
+        let pos = self.mouse_pos;
+        if pos.x >= 96.0 && pos.x < 160.0 && pos.y >= 96.0 && pos.y < 160.0 {
+            window.set_cursor(Cursor::SizeNs);
+        } else {
+            window.set_cursor(Cursor::Arrow);
+        }
+    }
+}
+
+impl Task for ViewState {
+    fn event(&mut self, _cx: &Context, _key: Key, event: portlight::Event) -> Response {
+        use flicker::{Affine, Color, Path, Point};
+        use portlight::Event;
+
+        if let (Some(window), Event::Window(event)) = (&self.window, event) {
+            match event {
+                WindowEvent::Frame => {
+                    let scale = window.scale();
+                    let size = window.size();
+                    let width = (size.width * scale) as usize;
+                    let height = (size.height * scale) as usize;
+                    self.framebuffer.resize(width * height, 0xFF000000);
+
+                    let mut target = self.renderer.attach(&mut self.framebuffer, width, height);
+
+                    target.clear(Color::rgba(21, 26, 31, 255));
+
+                    let transform = Affine::scale(scale as f32);
+
+                    let value = self.params.gain;
+
+                    let center = Point::new(128.0, 128.0);
+                    let radius = 32.0;
+                    let angle1 = 0.75 * std::f32::consts::PI;
+                    let angle2 = angle1 + value * 1.5 * std::f32::consts::PI;
+                    let mut path = Path::new();
+                    path.move_to(center + radius * Point::new(angle1.cos(), angle1.sin()));
+                    path.arc(radius, angle1, angle2);
+                    path.line_to(center + (radius - 4.0) * Point::new(angle2.cos(), angle2.sin()));
+                    path.arc(radius - 4.0, angle2, angle1);
+                    path.close();
+                    target.fill_path(&path, transform, Color::rgba(240, 240, 245, 255));
+
+                    let center = Point::new(128.0, 128.0);
+                    let radius = 32.0;
+                    let angle = 0.75 * std::f32::consts::PI;
+                    let span = 1.5 * std::f32::consts::PI;
+                    let mut path = Path::new();
+                    path.move_to(center + radius * Point::new(angle.cos(), angle.sin()));
+                    path.arc(radius, angle, angle + span);
+                    path.line_to(center + (radius - 4.0) * Point::new(-angle.cos(), angle.sin()));
+                    path.arc(radius - 4.0, angle + span, angle);
+                    path.close();
+                    target.stroke_path(&path, 1.0, transform, Color::rgba(240, 240, 245, 255));
+
+                    window.present(Bitmap::new(&self.framebuffer, width, height));
+                }
+                WindowEvent::MouseMove(pos) => {
+                    self.mouse_pos = pos;
+                    if let Some(gesture) = &self.gesture {
+                        let delta = -0.005 * (pos.y - gesture.start_mouse_pos.y) as f32;
+                        let new_value = (gesture.start_value + delta).clamp(0.0, 1.0);
+                        self.host.set_param(0, new_value as f64);
+                        self.params.gain = new_value;
+                    } else {
+                        self.update_cursor(window);
+                    }
+                }
+                WindowEvent::MouseDown(button) => {
+                    if button == MouseButton::Left {
+                        let pos = self.mouse_pos;
+                        if pos.x >= 96.0 && pos.x < 160.0 && pos.y >= 96.0 && pos.y < 160.0 {
+                            window.set_cursor(Cursor::SizeNs);
+                            self.host.begin_gesture(0);
+                            let value = self.params.gain;
+                            self.host.set_param(0, value as f64);
+                            self.params.gain = value;
+                            self.gesture = Some(Gesture {
+                                start_mouse_pos: pos,
+                                start_value: value,
+                            });
+                            return Response::Capture;
+                        }
+                    }
+                }
+                WindowEvent::MouseUp(button) => {
+                    if button == MouseButton::Left {
+                        if self.gesture.is_some() {
+                            self.host.end_gesture(0);
+                            self.gesture = None;
+                            self.update_cursor(window);
+                            return Response::Capture;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        Response::Ignore
+    }
+}
+
+pub struct GainView {
+    #[allow(unused)]
+    event_loop: EventLoop,
+    task: TaskHandle<ViewState>,
+}
+
+impl GainView {
+    fn open(
+        host: ViewHost,
+        parent: &ParentWindow,
+        params: &GainParams,
+    ) -> portlight::Result<GainView> {
+        let event_loop = EventLoopOptions::new().mode(EventLoopMode::Guest).build()?;
+
+        let task = event_loop.spawn(ViewState::new(host, params));
+
+        task.with(|state, cx| {
+            let mut options = WindowOptions::new();
+            options.size(portlight::Size::new(256.0, 256.0));
+
+            let raw_parent = match parent.as_raw() {
+                RawParent::Win32(window) => RawWindow::Win32(window),
+                RawParent::Cocoa(view) => RawWindow::AppKit(view),
+                RawParent::X11(window) => RawWindow::X11(window),
+            };
+            unsafe { options.raw_parent(raw_parent) };
+
+            let window = options.open(cx, Key(0))?;
+            window.show();
+
+            state.window = Some(window);
+
+            portlight::Result::Ok(())
+        })?;
+
+        Ok(GainView { event_loop, task })
+    }
+}
+
+impl View for GainView {
+    fn size(&self) -> Size {
+        let size = self.task.with(|state, _| state.window.as_ref().unwrap().size());
+
+        Size {
+            width: size.width,
+            height: size.height,
+        }
+    }
+
+    fn param_changed(&mut self, id: ParamId, value: ParamValue) {
+        self.task.with(|state, _| {
+            state.params.set_param(id, value);
+        });
+    }
+
+    fn file_descriptor(&self) -> Option<c_int> {
+        Some(self.event_loop.as_raw_fd())
+    }
+
+    fn poll(&mut self) {
+        // todo: is unwrapping really the right choice?
+        self.event_loop.poll().unwrap();
+    }
+}

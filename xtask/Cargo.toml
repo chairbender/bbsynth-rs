@@ -1,8 +1,0 @@
-[package]
-name = "xtask"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-#todo nih_plug_xtask = { git = "https://github.com/chairbender/nih-plug.git", branch = "support-iced-0.14" }
-nih_plug_xtask = { path = "../../nih-plug-mine/nih_plug_xtask" }
